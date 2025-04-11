@@ -5,8 +5,9 @@ use atrium_api::types::string;
 use clap::Parser;
 use jetstream::{
     events::{
-        commit::CommitEvent,
-        JetstreamEvent::Commit,
+        CommitOp,
+        EventKind,
+        JetstreamEvent,
     },
     DefaultJetstreamEndpoints,
     JetstreamCompression,
@@ -30,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let dids = args.did.unwrap_or_default();
-    let config: JetstreamConfig<serde_json::Value> = JetstreamConfig {
+    let config: JetstreamConfig = JetstreamConfig {
         endpoint: DefaultJetstreamEndpoints::USEastOne.into(),
         wanted_collections: vec![args.nsid.clone()],
         wanted_dids: dids.clone(),
@@ -48,8 +49,24 @@ async fn main() -> anyhow::Result<()> {
     );
 
     while let Some(event) = receiver.recv().await {
-        if let Commit(CommitEvent::CreateOrUpdate { commit, .. }) = event {
-            println!("got record: {:?}", commit.record);
+        if let JetstreamEvent {
+            kind: EventKind::Commit,
+            commit: Some(commit),
+            ..
+        } = event
+        {
+            if commit.collection != args.nsid {
+                continue;
+            }
+            if !(commit.operation == CommitOp::Create || commit.operation == CommitOp::Update) {
+                continue;
+            }
+            let Some(rec) = commit.record else { continue };
+            println!(
+                "New or updated record! ({})\n{:?}\n",
+                commit.rkey.as_str(),
+                rec.get()
+            );
         }
     }
 

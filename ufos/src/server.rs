@@ -1,5 +1,5 @@
-use crate::store::{Storage, StorageInfo};
-use crate::{CreateRecord, Nsid};
+use crate::storage::StoreReader;
+use crate::{ConsumerInfo, Nsid, TopCollections, UFOsRecord};
 use dropshot::endpoint;
 use dropshot::ApiDescription;
 use dropshot::ConfigDropshot;
@@ -16,10 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Clone)]
 struct Context {
     pub spec: Arc<serde_json::Value>,
-    storage: Storage,
+    storage: Box<dyn StoreReader>,
 }
 
 /// Meta: get the openapi spec for this api
@@ -34,10 +33,8 @@ async fn get_openapi(ctx: RequestContext<Context>) -> OkCorsResponse<serde_json:
 
 #[derive(Debug, Serialize, JsonSchema)]
 struct MetaInfo {
-    storage_info: StorageInfo,
-    jetstream_endpoint: Option<String>,
-    jetstream_cursor: Option<u64>,
-    mod_cursor: Option<u64>,
+    storage: serde_json::Value,
+    consumer: ConsumerInfo,
 }
 /// Get meta information about UFOs itself
 #[endpoint {
@@ -46,38 +43,22 @@ struct MetaInfo {
 }]
 async fn get_meta_info(ctx: RequestContext<Context>) -> OkCorsResponse<MetaInfo> {
     let Context { storage, .. } = ctx.context();
-
     let failed_to_get =
         |what| move |e| HttpError::for_internal_error(format!("failed to get {what}: {e:?}"));
 
     let storage_info = storage
-        .get_meta_info()
+        .get_storage_stats()
         .await
-        .map_err(failed_to_get("meta info"))?;
+        .map_err(failed_to_get("storage info"))?;
 
-    let jetstream_endpoint = storage
-        .get_jetstream_endpoint()
+    let consumer = storage
+        .get_consumer_info()
         .await
-        .map_err(failed_to_get("jetstream endpoint"))?
-        .map(|v| v.0);
-
-    let jetstream_cursor = storage
-        .get_jetstream_cursor()
-        .await
-        .map_err(failed_to_get("jetstream cursor"))?
-        .map(|c| c.to_raw_u64());
-
-    let mod_cursor = storage
-        .get_mod_cursor()
-        .await
-        .map_err(failed_to_get("jetstream cursor"))?
-        .map(|c| c.to_raw_u64());
+        .map_err(failed_to_get("consumer info"))?;
 
     ok_cors(MetaInfo {
-        storage_info,
-        jetstream_endpoint,
-        jetstream_cursor,
-        mod_cursor,
+        storage: storage_info,
+        consumer,
     })
 }
 
@@ -102,23 +83,17 @@ struct ApiRecord {
     did: String,
     collection: String,
     rkey: String,
-    record: serde_json::Value,
+    record: Box<serde_json::value::RawValue>,
     time_us: u64,
 }
-impl ApiRecord {
-    fn from_create_record(create_record: CreateRecord, collection: &Nsid) -> Self {
-        let CreateRecord {
-            did,
-            rkey,
-            record,
-            cursor,
-        } = create_record;
+impl From<UFOsRecord> for ApiRecord {
+    fn from(ufo: UFOsRecord) -> Self {
         Self {
-            did: did.to_string(),
-            collection: collection.to_string(),
-            rkey: rkey.to_string(),
-            record,
-            time_us: cursor.to_raw_u64(),
+            did: ufo.did.to_string(),
+            collection: ufo.collection.to_string(),
+            rkey: ufo.rkey.to_string(),
+            record: ufo.record,
+            time_us: ufo.cursor.to_raw_u64(),
         }
     }
 }
@@ -141,24 +116,22 @@ async fn get_records_by_collection(
         .to_multiple_nsids()
         .map_err(|reason| HttpError::for_bad_request(None, reason))?;
 
-    let mut api_records = Vec::new();
+    let records = storage
+        .get_records_by_collections(&collections, 100)
+        .await
+        .map_err(|e| HttpError::for_internal_error(e.to_string()))?
+        .into_iter()
+        .map(|r| r.into())
+        .collect();
 
-    // TODO: set up multiple db iterators and iterate them together with merge sort
-    for collection in &collections {
-        let records = storage
-            .get_collection_records(collection, 100)
-            .await
-            .map_err(|e| HttpError::for_internal_error(e.to_string()))?;
-
-        for record in records {
-            let api_record = ApiRecord::from_create_record(record, collection);
-            api_records.push(api_record);
-        }
-    }
-
-    ok_cors(api_records)
+    ok_cors(records)
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+struct TotalCounts {
+    total_records: u64,
+    dids_estimate: u64,
+}
 /// Get total records seen by collection
 #[endpoint {
     method = GET,
@@ -167,7 +140,7 @@ async fn get_records_by_collection(
 async fn get_records_total_seen(
     ctx: RequestContext<Context>,
     collection_query: Query<CollectionsQuery>,
-) -> OkCorsResponse<HashMap<String, u64>> {
+) -> OkCorsResponse<HashMap<String, TotalCounts>> {
     let Context { storage, .. } = ctx.context();
 
     let collections = collection_query
@@ -178,12 +151,18 @@ async fn get_records_total_seen(
     let mut seen_by_collection = HashMap::with_capacity(collections.len());
 
     for collection in &collections {
-        let total = storage
-            .get_collection_total_seen(collection)
+        let (total_records, dids_estimate) = storage
+            .get_counts_by_collection(collection)
             .await
             .map_err(|e| HttpError::for_internal_error(format!("boooo: {e:?}")))?;
 
-        seen_by_collection.insert(collection.to_string(), total);
+        seen_by_collection.insert(
+            collection.to_string(),
+            TotalCounts {
+                total_records,
+                dids_estimate,
+            },
+        );
     }
 
     ok_cors(seen_by_collection)
@@ -194,7 +173,7 @@ async fn get_records_total_seen(
     method = GET,
     path = "/collections"
 }]
-async fn get_top_collections(ctx: RequestContext<Context>) -> OkCorsResponse<HashMap<String, u64>> {
+async fn get_top_collections(ctx: RequestContext<Context>) -> OkCorsResponse<TopCollections> {
     let Context { storage, .. } = ctx.context();
     let collections = storage
         .get_top_collections()
@@ -204,7 +183,7 @@ async fn get_top_collections(ctx: RequestContext<Context>) -> OkCorsResponse<Has
     ok_cors(collections)
 }
 
-pub async fn serve(storage: Storage) -> Result<(), String> {
+pub async fn serve(storage: impl StoreReader + 'static) -> Result<(), String> {
     let log = ConfigLogging::StderrTerminal {
         level: ConfigLoggingLevel::Info,
     }
@@ -225,7 +204,7 @@ pub async fn serve(storage: Storage) -> Result<(), String> {
                 .json()
                 .map_err(|e| e.to_string())?,
         ),
-        storage,
+        storage: Box::new(storage),
     };
 
     ServerBuilder::new(api, context, log)

@@ -5,14 +5,17 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.97"
+async-trait = "0.1.88"
 bincode = { version = "2.0.1", features = ["serde"] }
+cardinality-estimator = { version = "1.0.2", features = ["with_serde"] }
 clap = { version = "4.5.31", features = ["derive"] }
 dropshot = "0.16.0"
 env_logger = "0.11.7"
+fjall = { version = "2.8.0", features = ["lz4"] }
 jetstream = { path = "../jetstream" }
 log = "0.4.26"
 lsm-tree = "2.6.6"
-schemars = "0.8.22"
+schemars = { version = "0.8.22", features = ["raw_value"] }
 semver = "1.0.26"
 serde = "1.0.219"
 serde_json = "1.0.140"
@@ -22,8 +25,5 @@ tokio = { version = "1.44.2", features = ["full", "sync", "time"] }
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6.0"
 
-[dependencies.fjall]
-git = "https://github.com/fjall-rs/fjall.git"
-branch = "fix/lockless-ranges"
-features = ["bytes", "single_writer_tx"]
-default-features = false
+[dev-dependencies]
+tempfile = "3.19.1"

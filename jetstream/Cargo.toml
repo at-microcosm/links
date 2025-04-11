@@ -10,7 +10,7 @@ readme = "README.md"
 
 [dependencies]
 async-trait = "0.1.83"
-atrium-api = { version = "0.25", default-features = false, features = [
+atrium-api = { version = "0.25.2", default-features = false, features = [
     "namespace-appbsky",
 ] }
 tokio = { version = "1.44.2", features = ["full", "sync", "time"] }
@@ -22,7 +22,7 @@ tokio-tungstenite = { version = "0.26.2", features = [
 futures-util = "0.3.31"
 url = "2.5.4"
 serde = { version = "1.0.215", features = ["derive"] }
-serde_json = "1.0.132"
+serde_json = { version = "1.0.140", features = ["raw_value"] }
 chrono = "0.4.38"
 zstd = "0.13.2"
 thiserror = "2.0.3"
