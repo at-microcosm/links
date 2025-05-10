@@ -3,6 +3,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
 
+#[cfg(feature = "rocks")]
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 
 use std::time;
@@ -19,6 +20,7 @@ struct Args {
     to_data_dir: PathBuf,
 }
 
+#[cfg(feature = "rocks")]
 fn main() -> Result<()> {
     let args = Args::parse();
 
