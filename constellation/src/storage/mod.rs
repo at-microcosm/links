@@ -1,7 +1,7 @@
 use crate::{ActionableEvent, CountsByCount, Did, RecordId};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub mod mem_store;
 pub use mem_store::MemStorage;
@@ -59,6 +59,7 @@ pub trait LinkReader: Clone + Send + Sync + 'static {
         path: &str,
         limit: u64,
         until: Option<u64>,
+        filter_dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>>;
 
     fn get_distinct_dids(
@@ -145,7 +146,14 @@ mod tests {
         );
         assert_eq!(storage.get_distinct_did_count("", "", "")?, 0);
         assert_eq!(
-            storage.get_links("a.com", "app.t.c", ".abc.uri", 100, None)?,
+            storage.get_links(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                100,
+                None,
+                &HashSet::default()
+            )?,
             PagedAppendingCollection {
                 version: (0, 0),
                 items: vec![],
@@ -641,7 +649,14 @@ mod tests {
             0,
         )?;
         assert_eq!(
-            storage.get_links("a.com", "app.t.c", ".abc.uri", 100, None)?,
+            storage.get_links(
+                "a.com",
+                "app.t.c",
+                ".abc.uri",
+                100,
+                None,
+                &HashSet::default()
+            )?,
             PagedAppendingCollection {
                 version: (1, 0),
                 items: vec![RecordId {
@@ -682,7 +697,8 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let links =
+            storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::default())?;
         let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, None)?;
         assert_eq!(
             links,
@@ -713,7 +729,14 @@ mod tests {
                 total: 5,
             }
         );
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, dids.next)?;
         assert_eq!(
             links,
@@ -744,7 +767,14 @@ mod tests {
                 total: 5,
             }
         );
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         let dids = storage.get_distinct_dids("a.com", "app.t.c", ".abc.uri", 2, dids.next)?;
         assert_eq!(
             links,
@@ -771,6 +801,183 @@ mod tests {
         assert_stats(storage.get_stats()?, 5..=5, 1..=1, 5..=5);
     });
 
+    test_each_storage!(get_filtered_links, |storage| {
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            None,
+            &HashSet::from([Did("did:plc:linker".to_string())]),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (0, 0),
+                items: vec![],
+                next: None,
+            }
+        );
+
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:linker".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            None,
+            &HashSet::from([Did("did:plc:linker".to_string())]),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (1, 0),
+                items: vec![RecordId {
+                    did: "did:plc:linker".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },],
+                next: None,
+            }
+        );
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            None,
+            &HashSet::from([Did("did:plc:someone-else".to_string())]),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (0, 0),
+                items: vec![],
+                next: None,
+            }
+        );
+
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:linker".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf-2".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+        storage.push(
+            &ActionableEvent::CreateLinks {
+                record_id: RecordId {
+                    did: "did:plc:someone-else".into(),
+                    collection: "app.t.c".into(),
+                    rkey: "asdf".into(),
+                },
+                links: vec![CollectedLink {
+                    target: Link::Uri("a.com".into()),
+                    path: ".abc.uri".into(),
+                }],
+            },
+            0,
+        )?;
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            None,
+            &HashSet::from([Did("did:plc:linker".to_string())]),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (2, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf-2".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                ],
+                next: None,
+            }
+        );
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            None,
+            &HashSet::from([
+                Did("did:plc:linker".to_string()),
+                Did("did:plc:someone-else".to_string()),
+            ]),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (3, 0),
+                items: vec![
+                    RecordId {
+                        did: "did:plc:someone-else".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf".into(),
+                    },
+                    RecordId {
+                        did: "did:plc:linker".into(),
+                        collection: "app.t.c".into(),
+                        rkey: "asdf-2".into(),
+                    },
+                ],
+                next: Some(1),
+            }
+        );
+
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            None,
+            &HashSet::from([Did("did:plc:someone-unknown".to_string())]),
+        )?;
+        assert_eq!(
+            links,
+            PagedAppendingCollection {
+                version: (0, 0),
+                items: vec![],
+                next: None,
+            }
+        );
+    });
+
     test_each_storage!(get_links_exact_multiple, |storage| {
         for i in 1..=4 {
             storage.push(
@@ -788,7 +995,8 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let links =
+            storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::default())?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -809,7 +1017,14 @@ mod tests {
                 total: 4,
             }
         );
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -850,7 +1065,8 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let links =
+            storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::default())?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -885,7 +1101,14 @@ mod tests {
             },
             0,
         )?;
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -926,7 +1149,8 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let links =
+            storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::default())?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -955,7 +1179,14 @@ mod tests {
             }),
             0,
         )?;
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -989,7 +1220,8 @@ mod tests {
                 0,
             )?;
         }
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None)?;
+        let links =
+            storage.get_links("a.com", "app.t.c", ".abc.uri", 2, None, &HashSet::default())?;
         assert_eq!(
             links,
             PagedAppendingCollection {
@@ -1014,7 +1246,14 @@ mod tests {
             &ActionableEvent::DeactivateAccount("did:plc:asdf-1".into()),
             0,
         )?;
-        let links = storage.get_links("a.com", "app.t.c", ".abc.uri", 2, links.next)?;
+        let links = storage.get_links(
+            "a.com",
+            "app.t.c",
+            ".abc.uri",
+            2,
+            links.next,
+            &HashSet::default(),
+        )?;
         assert_eq!(
             links,
             PagedAppendingCollection {
