@@ -20,6 +20,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use fjall::{
+    compaction::{Leveled, Strategy},
     Batch as FjallBatch, Config, Keyspace, PartitionCreateOptions, PartitionHandle, Snapshot,
 };
 use jetstream::events::Cursor;
@@ -168,8 +169,22 @@ impl StorageWhatever<FjallReader, FjallWriter, FjallBackground, FjallConfig> for
 
         let global = keyspace.open_partition("global", PartitionCreateOptions::default())?;
         let feeds = keyspace.open_partition("feeds", PartitionCreateOptions::default())?;
+        // TODO: value separation + gc will probably work
+        // then *maybe* also a tall tree to help deletes happen?
         let records = keyspace.open_partition("records", PartitionCreateOptions::default())?;
-        let rollups = keyspace.open_partition("rollups", PartitionCreateOptions::default())?;
+        // try to make the tree narrower so deletes eventually bottom out and are removed
+        // when fjall finally gets weak delete (rocksdb "single delete") that will work way better
+        // ...not sure if changing the strategy after creation actually works
+        // TODO: also increase block size
+        let rollups = keyspace.open_partition(
+            "rollups",
+            PartitionCreateOptions::default().compaction_strategy(Strategy::Leveled(Leveled {
+                target_size: 16 * 2_u32.pow(20), // MiB (default 64)
+                level_ratio: 2,                  // this is a little extreme? (default 10)
+                ..Default::default()
+            })),
+        )?;
+
         let queues = keyspace.open_partition("queues", PartitionCreateOptions::default())?;
 
         let js_cursor = get_static_neu::<JetstreamCursorKey, JetstreamCursorValue>(&global)?;
