@@ -860,6 +860,7 @@ impl LinkReader for RocksStorage {
         path: &str,
         limit: u64,
         until: Option<u64>,
+        filter_dids: &HashSet<Did>,
     ) -> Result<PagedAppendingCollection<RecordId>> {
         let target_key = TargetKey(
             Target(target.to_string()),
@@ -876,7 +877,24 @@ impl LinkReader for RocksStorage {
             });
         };
 
-        let linkers = self.get_target_linkers(&target_id)?;
+        let mut linkers = self.get_target_linkers(&target_id)?;
+        if !filter_dids.is_empty() {
+            let mut did_filter = HashSet::new();
+            for did in filter_dids {
+                let Some(DidIdValue(did_id, active)) =
+                    self.did_id_table.get_id_val(&self.db, did)?
+                else {
+                    eprintln!("failed to find a did_id for {did:?}");
+                    continue;
+                };
+                if !active {
+                    eprintln!("excluding inactive did from filtered results");
+                    continue;
+                }
+                did_filter.insert(did_id);
+            }
+            linkers.0.retain(|linker| did_filter.contains(&linker.0));
+        }
 
         let (alive, gone) = linkers.count();
         let total = alive + gone;
